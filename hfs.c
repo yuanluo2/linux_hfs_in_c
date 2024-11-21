@@ -43,7 +43,7 @@ typedef struct ArenaBlockHeader  ArenaBlockHeader;
 typedef struct ArenaAllocator    ArenaAllocator;
 
 #define TIME_BUF_SIZE          64
-#define DEFAULT_BLOCK_SIZE     4096
+#define DEFAULT_BLOCK_SIZE     8192
 #define HTTP_CHUNKED_BUF_SIZE  8192
 
 #define MAX_HTTP_REQUEST_LENGTH       2048
