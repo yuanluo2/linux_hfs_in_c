@@ -11,6 +11,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <errno.h>
+#include <time.h>
 
 /* linux headers. */
 #include <sys/socket.h>
@@ -41,8 +42,9 @@ typedef unsigned char            ArenaFlag;
 typedef struct ArenaBlockHeader  ArenaBlockHeader;
 typedef struct ArenaAllocator    ArenaAllocator;
 
-#define DEFAULT_BLOCK_SIZE  4096
-#define HTTP_CHUNKED_BUF_SIZE 8192
+#define TIME_BUF_SIZE          64
+#define DEFAULT_BLOCK_SIZE     4096
+#define HTTP_CHUNKED_BUF_SIZE  8192
 
 #define MAX_HTTP_REQUEST_LENGTH       2048
 #define MAX_HTTP_REQUEST_METHOD_LEN   16
@@ -179,10 +181,26 @@ static MimeMap* mimeMapping = NULL;
 static String* server_ip_port = NULL;
 
 /************************* functions. **************************/
+void hfs_log(FILE* stream, const char* fmt, ...) {
+    va_list args;
+    time_t current_time;
+    struct tm* local_time;
+    char time_str[TIME_BUF_SIZE];
+
+    time(&current_time);
+    local_time = localtime(&current_time);
+    strftime(time_str, TIME_BUF_SIZE, "%Y-%m-%d %H:%M:%S", local_time);
+
+    fprintf(stream, "[%s] ", time_str);
+    va_start(args, fmt);
+    vfprintf(stream, fmt, args);
+    va_end(args);
+}
+
 Boolean is_dir(const char* path) {
     struct stat st;
     if (stat(path, &st) == -1) {
-        fprintf(stderr, "stat() failed: `%s`, %s\n", path, strerror(errno));
+        hfs_log(stderr, "stat() failed: `%s`, %s\n", path, strerror(errno));
         return b_False;
     }
 
@@ -192,7 +210,7 @@ Boolean is_dir(const char* path) {
 Boolean is_regular_file(const char* path) {
     struct stat st;
     if (stat(path, &st) == -1) {
-        fprintf(stderr, "stat() failed: `%s`, %s\n", path, strerror(errno));
+        hfs_log(stderr, "stat() failed: `%s`, %s\n", path, strerror(errno));
         return b_False;
     }
 
@@ -268,7 +286,7 @@ ArenaBlockHeader* arena_create_new_block(ArenaAllocator* arena, size_t size, siz
             In this program, when out of memory, I choose to using abort policy, because this server
             actually do not have some important data to be saved, abort() just fit the usage.
         */
-        fprintf(stderr, "arena allocator failed: out of memory\n");
+        hfs_log(stderr, "arena allocator failed: out of memory\n");
         fflush(stderr);
         abort();
     }
@@ -338,7 +356,7 @@ void arena_seek_usage(ArenaAllocator* arena) {
     }
 
     percent = totalUsed / total * 100;
-    printf("total memory: %d bytes, used: %d bytes, percent: %.2f%%\n", (int)total, (int)totalUsed, percent);
+    hfs_log(stdout, "total memory: %d bytes, used: %d bytes, percent: %.2f%%\n", (int)total, (int)totalUsed, percent);
 }
 
 String* str_create_ex(ArenaAllocator* arena, size_t capacity) {
@@ -707,7 +725,7 @@ Boolean mime_map_init(ArenaAllocator* arena, const char* mimeMapFilePath) {
     int len;
 
     if ((f = fopen(mimeMapFilePath, "r")) == NULL) {
-        fprintf(stderr, "can't open `%s`\n", mimeMapFilePath);
+        hfs_log(stderr, "can't open `%s`\n", mimeMapFilePath);
         return b_False;
     }
 
@@ -721,7 +739,7 @@ Boolean mime_map_init(ArenaAllocator* arena, const char* mimeMapFilePath) {
         }
         else if (len < 0) {
             fclose(f);
-            fprintf(stderr, "`%s` read line failed\n", mimeMapFilePath);
+            hfs_log(stderr, "`%s` read line failed\n", mimeMapFilePath);
             return b_False;
         }
         else {
@@ -744,7 +762,7 @@ Boolean local_ip_port_init(ArenaAllocator* arena, int port) {
     char ip[INET6_ADDRSTRLEN];
 
     if (getifaddrs(&ifaddr) != 0) {
-        perror("getifaddrs() failed");
+        hfs_log(stderr, "getifaddrs() failed, %s\n", strerror(errno));
         return b_False;
     }
 
@@ -755,7 +773,7 @@ Boolean local_ip_port_init(ArenaAllocator* arena, int port) {
             sockaddr = (struct sockaddr_in*)(cursor->ifa_addr);
 
             if (inet_ntop(AF_INET, &(sockaddr->sin_addr), ip, INET6_ADDRSTRLEN) == NULL) {
-                perror("inet_ntop() failed");
+                hfs_log(stderr, "inet_ntop() failed, %s\n", strerror(errno));
                 freeifaddrs(ifaddr);
                 return b_False;
             }
@@ -881,17 +899,17 @@ Boolean server_bind_ip_port(int fd, const char* ip, int* port) {
 
     ret = inet_pton(AF_INET, ip, &(addr.sin_addr));
     if (ret < 0) {
-        perror("inet_pton() failed");
+        hfs_log(stderr, "inet_pton() failed, %s\n", strerror(errno));
         return b_False;
     }
     else if (ret == 0) {
-        fprintf(stderr, "`%s` is not valid ipv4/ipv6 address\n", ip);
+        hfs_log(stderr, "`%s` is not valid ipv4/ipv6 address\n", ip);
         return b_False;
     }
 
     while (bind(fd, (const struct sockaddr*)(&addr), sizeof(addr)) != 0) {
         if (*port == 65535) {
-            perror("bind() failed");
+            hfs_log(stderr, "bind() failed, %s\n", strerror(errno));
             return b_False;
         }
         else {
@@ -901,12 +919,12 @@ Boolean server_bind_ip_port(int fd, const char* ip, int* port) {
     }
 
     if (listen(fd, 32) != 0) {
-        perror("listen() failed");
+        hfs_log(stderr, "listen() failed, %s\n", strerror(errno));
         return b_False;
     }
 
     if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const void*)(&option), sizeof(option)) < 0) {
-        perror("setsockopt() on SO_REUSEADDR failed");
+        hfs_log(stderr, "setsockopt() on SO_REUSEADDR failed, %s\n", strerror(errno));
         return b_False;
     }
 
@@ -919,12 +937,12 @@ Boolean conn_get_ip_port(Connection* conn) {
     socklen_t len = sizeof(addr);
 
     if (getpeername(conn->fd, (struct sockaddr*)(&addr), &len) != 0) {
-        perror("getpeername() failed");
+        hfs_log(stderr, "getpeername() failed, %s\n", strerror(errno));
         return b_False;
     }
 
     if (inet_ntop(addr.sin_family, &(addr.sin_addr), ip, sizeof(ip) / sizeof(char)) == NULL) {
-        perror("inet_ntop() failed");
+        hfs_log(stderr, "inet_ntop() failed, %s\n", strerror(errno));
         return b_False;
     }
 
@@ -942,7 +960,7 @@ Boolean conn_set_recv_timeout(Connection* conn) {
     timeout.tv_usec = RECV_TIMEOUT_USEC;
 
     if (setsockopt(conn->fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
-        perror("setsockopt() on SO_RCVTIMEO failed");
+        hfs_log(stderr, "setsockopt() on SO_RCVTIMEO failed, %s\n", strerror(errno));
 		return b_False;
 	}
 
@@ -1214,14 +1232,14 @@ String* response_to_str(ArenaAllocator* arena, Response* res) {
 }
 
 void print_request_brief(Connection* conn, Request* req) {
-    printf("%s  --  %s  --  %s\n", conn->ip_port->data, req->method->data, req->url->data);
+    hfs_log(stdout, "%s  --  %s  --  %s\n", conn->ip_port->data, req->method->data, req->url->data);
 }
 
 void print_request_detail(Connection* conn, Request* req) {
     size_t i;
     HeaderPair* cursor;
-    printf("%s\n", conn->ip_port->data);
-    printf("%s %s %s\n", req->method->data, req->url->data, req->version->data);
+    hfs_log(stdout, "%s\n", conn->ip_port->data);
+    hfs_log(stdout, "%s %s %s\n", req->method->data, req->url->data, req->version->data);
 
     for (i = 0; i < HEADERS_DEFAULT_BUCKET_SIZE; ++i) {
         cursor = req->headers->bucket[i];
@@ -1266,7 +1284,7 @@ void send_chunked_file_data(Connection* conn, String* path) {
         len = fread(buf, sizeof(char), HTTP_CHUNKED_BUF_SIZE, f);
 
         if (ferror(f)) {
-            fprintf(stderr, "fread() failed, can't send chunked data for %s\n", path->data);
+            hfs_log(stderr, "fread() failed, can't send chunked data for %s\n", path->data);
             return;
         }
 
@@ -1400,7 +1418,7 @@ void serve_file_list(Connection* conn, Request* req, String* currentPath) {
     DIR* dir;
     
     if ((dir = opendir(currentPath->data)) == NULL) {
-        fprintf(stderr, "opendir() failed: `%s`, %s\n", currentPath->data, strerror(errno));
+        hfs_log(stderr, "opendir() failed: `%s`, %s\n", currentPath->data, strerror(errno));
         res = response_create_by_template(conn->arena, "500", "Internal Server Error");
         send_response(conn->arena, conn->fd, res);
         return;
@@ -1602,7 +1620,7 @@ void conn_handle_http_routine(Connection* conn) {
 
     req = request_create(conn->arena);
     if (!parse_request(conn, req)) {
-        fprintf(stderr, "can't parse http request for `%s`\n", conn->ip_port->data);
+        hfs_log(stderr, "can't parse http request for `%s`\n", conn->ip_port->data);
         return;
     }
 
@@ -1634,7 +1652,7 @@ void handle_connection(int fd, const char* rootDir) {
         goto finally;
     }
 
-    printf("connected: %s\n", conn.ip_port->data);
+    hfs_log(stdout, "connected: %s\n", conn.ip_port->data);
     conn_handle_http_routine(&conn);
     arena_seek_usage(conn.arena);
 
@@ -1651,7 +1669,7 @@ void server_loop(Server* s) {
 
         if (client < 0) {
             if (errno != EINTR) {
-                perror("accept() failed");
+                hfs_log(stderr, "accept() failed, %s\n", strerror(errno));
             }
 
             return;
@@ -1659,7 +1677,7 @@ void server_loop(Server* s) {
 
         pid = fork();
         if (pid < 0) {
-            perror("fork() failed");
+            hfs_log(stderr, "fork() failed, %s\n", strerror(errno));
         }
         else if (pid > 0) {  /* parent. */
             close(client);
@@ -1688,7 +1706,7 @@ Boolean server_init(Server* s, const char* ip, int port, const char* rootDir) {
 
     s->fd = socket(AF_INET, SOCK_STREAM, 0);
     if (s->fd < 0) {
-        perror("error socket()");
+        hfs_log(stderr, "error socket(), %s\n", strerror(errno));
         goto tidy_up;
     }
 
@@ -1734,12 +1752,12 @@ Boolean setting_signals(void) {
     sigemptyset(&(actionSIGCHLD.sa_mask));
 
     if (sigaction(SIGINT, &actionSIGINT, NULL) < 0) {
-        perror("sigaction() on `SIGINT` failed");
+        hfs_log(stderr, "sigaction() on `SIGINT` failed, %s\n", strerror(errno));
 		return b_False;
     }
 
     if (sigaction(SIGCHLD, &actionSIGCHLD, NULL) < 0) {
-        perror("sigaction() on `SIGCHLD` failed");
+        hfs_log(stderr, "sigaction() on `SIGCHLD` failed, %s\n", strerror(errno));
         return b_False;
     }
 
@@ -1748,7 +1766,7 @@ Boolean setting_signals(void) {
         otherwise the whole program would terminated, that should not be happend.
     */
 	if (signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
-        perror("signal() set SIG_IGN to `SIGPIPE` failed");
+        hfs_log(stderr, "signal() set SIG_IGN to `SIGPIPE` failed, %s\n", strerror(errno));
 		return b_False;
 	}
 
@@ -1781,33 +1799,33 @@ int main(int argc, char* argv[]) {
     int port;
     
     if (argc != 3) {
-        fprintf(stderr, "usage: %s <port> <root_dir>\n", argv[0]);
+        hfs_log(stderr, "usage: %s <port> <root_dir>\n", argv[0]);
         return 1;
     }
 
     if ((port = try_parse_port(argv[1])) < 0) {
-        fprintf(stderr, "`%s` is not a valid port\n", argv[1]);
+        hfs_log(stderr, "`%s` is not a valid port\n", argv[1]);
         return 1;
     }
 
     if (!is_dir(argv[2])) {
-        fprintf(stderr, "`%s` is not a valid directory path\n", argv[2]);
+        hfs_log(stderr, "`%s` is not a valid directory path\n", argv[2]);
         return 1;
     }
 
     if (!setting_signals()) {
-        fprintf(stderr, "can't setting signals\n");
+        hfs_log(stderr, "can't setting signals\n");
         return 1;
     }
 
     if (!server_init(&s, "0.0.0.0", port, argv[2])) {
-        fprintf(stderr, "can't properly init server\n");
+        hfs_log(stderr, "can't properly init server\n");
         return 1;
     }
 
-    printf("server starts on port %d\n", s.port);
+    hfs_log(stdout, "server starts on port %d\n", s.port);
     server_loop(&s);
     server_free(&s);
-    printf("server exits\n");
+    hfs_log(stdout, "server exits\n");
     return 0;
 }
