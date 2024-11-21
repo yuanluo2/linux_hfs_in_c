@@ -8,3 +8,5 @@
 ##### this server's is only one file, no 3rd-parties, all data structures and algorithm are all customized. also, this server implements the arena allocator to do the global memory management. mime.txt is a mapping file to do the mapping from the file extension to mime, you can add or remove lines to fit your own need, and it will be worked when server restarted.
 
 ![image](https://github.com/user-attachments/assets/111423c5-b510-4035-8ef9-1b16d1afd413)
+![image](https://github.com/user-attachments/assets/3e86e7bb-a366-4000-ac3a-a42d6db23dcb)
+
