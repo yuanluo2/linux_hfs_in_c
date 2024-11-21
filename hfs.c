@@ -706,7 +706,7 @@ void split_mime_line_and_save(ArenaAllocator* arena, const char* buf, int len) {
     String* value;
 
     for (i = 0; i < len; ++i) {
-        if (buf[i] == ' ') {
+        if (buf[i] == ' ' || buf[i] == '\t') {
             break;
         }
     }
