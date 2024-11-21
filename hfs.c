@@ -1,6 +1,6 @@
 /*
     @author yuanluo2
- 
+    
     file server based on http protocol, written in ANSI C, only single file.
     this program is used to seek the file list of my server or upload files to my server.
     only supports linux platform.
@@ -605,8 +605,8 @@ unsigned int mime_map_hash(String* key) {
     size_t i;
 
     for (i = 0; i < key->length; ++i) {
-        /* K&R's hash algorithm. */
-        hashval = key->data[i] + 31 * hashval;
+        /* K&R's hash algorithm. because the mime map should ignore case, so using tolower() here. */
+        hashval = tolower(key->data[i]) + 31 * hashval;
     }
 
     return hashval % MIMEMAP_DEFAULT_BUCKET_SIZE;
@@ -820,8 +820,8 @@ unsigned int headers_hash(String* key) {
     size_t i;
 
     for (i = 0; i < key->length; ++i) {
-        /* K&R's hash algorithm. */
-        hashval = key->data[i] + 31 * hashval;
+        /* K&R's hash algorithm, because headers should ignore case, using tolower() here. */
+        hashval = tolower(key->data[i]) + 31 * hashval;
     }
 
     return hashval % HEADERS_DEFAULT_BUCKET_SIZE;
