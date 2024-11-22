@@ -1353,7 +1353,7 @@ void send_chunked_file_data(Connection* conn, String* path) {
         }
 
         str_add_long_in_hex(conn->arena, temp, len);
-        send(conn->fd, temp->data, temp->length, 0);
+        send_all(conn->fd, temp);
         send(conn->fd, "\r\n", 2, 0);
         send(conn->fd, buf, len, 0);
         send(conn->fd, "\r\n", 2, 0);
@@ -1434,6 +1434,16 @@ String* file_size_to_str(ArenaAllocator* arena, float fileSize, int precision) {
     return str;
 }
 
+/*
+    In this program's early time, the StringList doesn't exist, this function would add all file names into 
+    the Response' body directly, because arena allocator only allocate, never release, so this body would
+    expand again and again, some day when I open a dir on my browser, it's very slow, because this dir contains many files,
+    the memory usage of this connection takes me 568040576 bytes! 
+    
+    I can't tolerant that, so I came up with this StringList. every file's name would expand, but they have limit, can't expand
+    many times, and can't take a huge memory usage. using a list to save them can avoid a long string's 2x expand policy, 
+    so this idea can decrease the memory usage.
+*/
 size_t build_file_list(ArenaAllocator* arena, DIR* dir, String* baseDir, Request* req, StringList* list) {
     struct dirent* entry;
 	struct stat st;
