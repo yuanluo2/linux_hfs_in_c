@@ -356,7 +356,7 @@ void arena_recycle(ArenaAllocator* arena, void* memory, size_t capacity) {
     ArenaBlockHeader* header = (ArenaBlockHeader*)memory - 1;
 
     if (capacity >= arena->blockSize && header->flag == ARENA_FLAG_ONLY_ONE) {
-        hfs_log(stdout, "trigger recycle for %ld bytes\n", capacity);
+        hfs_log(stdout, "arena allocator trigger recycle for %ld bytes\n", capacity);
         header->flag = ARENA_FLAG_NO_USE;
         header->used = 0;
     }
@@ -375,7 +375,7 @@ void arena_seek_usage(ArenaAllocator* arena) {
     }
 
     percent = totalUsed / total * 100;
-    hfs_log(stdout, "total memory: %d bytes, used: %d bytes, percent: %.2f%%\n", (int)total, (int)totalUsed, percent);
+    hfs_log(stdout, "total memory: `%d` bytes, used: `%d` bytes, percent: %.2f%%\n", (int)total, (int)totalUsed, percent);
 }
 
 String* str_create_ex(ArenaAllocator* arena, size_t capacity) {
@@ -1438,11 +1438,11 @@ String* file_size_to_str(ArenaAllocator* arena, float fileSize, int precision) {
     In this program's early time, the StringList doesn't exist, this function would add all file names into 
     the Response' body directly, because arena allocator only allocate, never release, so this body would
     expand again and again, some day when I open a dir on my browser, it's very slow, because this dir contains many files,
-    the memory usage of this connection takes me 568040576 bytes! 
+    the memory usage of this connection takes me 568040576 bytes! This is really a mistake!
     
     I can't tolerant that, so I came up with this StringList. every file's name would expand, but they have limit, can't expand
     many times, and can't take a huge memory usage. using a list to save them can avoid a long string's 2x expand policy, 
-    so this idea can decrease the memory usage.
+    so this idea can decrease the memory usage. After I add this list, the memory usage only takes 516096 bytes.
 */
 size_t build_file_list(ArenaAllocator* arena, DIR* dir, String* baseDir, Request* req, StringList* list) {
     struct dirent* entry;
@@ -1728,7 +1728,7 @@ void conn_handle_http_routine(Connection* conn) {
 
     req = request_create(conn->arena);
     if (!parse_request(conn, req)) {
-        hfs_log(stderr, "can't parse http request for `%s`\n", conn->ip_port->data);
+        hfs_log(stderr, "%s -- can't parse http request\n", conn->ip_port->data);
         return;
     }
 
