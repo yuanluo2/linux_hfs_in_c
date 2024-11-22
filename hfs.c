@@ -32,6 +32,8 @@ typedef unsigned char      Boolean;
 typedef struct MimePair    MimePair;
 typedef struct MimeMap     MimeMap;
 typedef struct String      String;
+typedef struct StringNode  StringNode;
+typedef struct StringList  StringList;
 typedef struct HeaderPair  HeaderPair;
 typedef struct Headers     Headers;
 typedef struct Request     Request;
@@ -46,7 +48,10 @@ typedef struct ArenaAllocator    ArenaAllocator;
 
 #define TIME_BUF_SIZE          64
 #define DEFAULT_BLOCK_SIZE     8192
+#define DEFAULT_BUF_SIZE       8192
 #define HTTP_CHUNKED_BUF_SIZE  8192
+
+#define THRESHOLD_FILE_LIST_CONCAT_LEN  (DEFAULT_BLOCK_SIZE - 512)
 
 #define MAX_HTTP_REQUEST_LENGTH       2048
 #define MAX_HTTP_REQUEST_METHOD_LEN   16
@@ -127,6 +132,16 @@ struct String {
         so it can deal with ANSI C's <string.h> functions.
     */
     char* data;  
+};
+
+struct StringNode {
+    String* str;
+    StringNode* next;
+};
+
+struct StringList {
+    StringNode* head;
+    size_t length;
 };
 
 struct HeaderPair {
@@ -337,9 +352,11 @@ void* arena_malloc(ArenaAllocator* arena, size_t size) {
 /*
     try to recycle memory allocated by arena allocator.
 */
-void arena_recycle(void* memory) {
+void arena_recycle(ArenaAllocator* arena, void* memory, size_t capacity) {
     ArenaBlockHeader* header = (ArenaBlockHeader*)memory - 1;
-    if (header->flag == ARENA_FLAG_ONLY_ONE) {
+
+    if (capacity >= arena->blockSize && header->flag == ARENA_FLAG_ONLY_ONE) {
+        hfs_log(stdout, "trigger recycle for %ld bytes\n", capacity);
         header->flag = ARENA_FLAG_NO_USE;
         header->used = 0;
     }
@@ -403,7 +420,7 @@ void str_expand_capacity(ArenaAllocator* arena, String* str, size_t newCapacity)
     temp = (char*)arena_malloc(arena, newCapacity * sizeof(char));
 
     memcpy(temp, str->data, (str->length + 1) * sizeof(char));
-    arena_recycle(str->data);
+    arena_recycle(arena, str->data, str->capacity);
     str->data = temp;
     str->capacity = newCapacity;
 }
@@ -424,7 +441,7 @@ void str_add_cstr_ex(ArenaAllocator* arena, String* str, const char* cstr, size_
     if (needLen > str->capacity) {
         str_expand_capacity(arena, str, needLen);
     }
-
+    
     memcpy(str->data + str->length, cstr, len * sizeof(char));
     str->length += len;
     str->data[str->length] = '\0';
@@ -576,6 +593,36 @@ Boolean str_compare_ignore_case(String* left, String* right) {
     }
 
     return b_True;
+}
+
+StringNode* str_node_create(ArenaAllocator* arena, String* str) {
+    StringNode* node = (StringNode*)arena_malloc(arena, sizeof(StringNode));
+
+    node->str = str;
+    node->next = NULL;
+    return node;
+}
+
+StringList* str_list_create(ArenaAllocator* arena) {
+    StringList* list = (StringList*)arena_malloc(arena, sizeof(StringList));
+
+    list->head = NULL;
+    list->length = 0;
+    return list;
+}
+
+void str_list_add(ArenaAllocator* arena, StringList* list, String* str) {
+    StringNode* node = str_node_create(arena, str);
+
+    if (list->head == NULL) {
+        list->head = node;
+    }
+    else {
+        node->next = list->head;
+        list->head = node;
+    }
+
+    list->length += 1;
 }
 
 MimePair* mime_pair_create(ArenaAllocator* arena, String* key, String* value) {
@@ -1003,8 +1050,8 @@ Response* response_create(ArenaAllocator* arena) {
 */
 int socket_read_line(int fd, char* buf, size_t bufSize) {
     int numOfRecvBytes = 0;
-    int n;
-    char c;
+    int n = 0;
+    char c = '\0';
 
     while (numOfRecvBytes < bufSize) {
         n = recv(fd, &c, 1, 0);
@@ -1165,13 +1212,13 @@ Boolean decode_percent_encoding_url(ArenaAllocator* arena, Request* req) {
 }
 
 Boolean parse_request(Connection* conn, Request* req) {
-    char* buf = (char*)arena_malloc(conn->arena, DEFAULT_BLOCK_SIZE);
+    char* buf = (char*)arena_malloc(conn->arena, DEFAULT_BUF_SIZE);
 
-    if (!parse_method_url_version(conn, req, buf, DEFAULT_BLOCK_SIZE)) {
+    if (!parse_method_url_version(conn, req, buf, DEFAULT_BUF_SIZE)) {
         return b_False;
     }
 
-    if (!parse_http_request_headers(conn, req, buf, DEFAULT_BLOCK_SIZE)) {
+    if (!parse_http_request_headers(conn, req, buf, DEFAULT_BUF_SIZE)) {
         return b_False;
     }
 
@@ -1179,8 +1226,7 @@ Boolean parse_request(Connection* conn, Request* req) {
         return b_False;
     }
 
-    /* because buf's capacity is `DEFAULT_BLOCK_SIZE`, so this step can always success. */
-    arena_recycle(buf);
+    arena_recycle(conn->arena, buf, DEFAULT_BLOCK_SIZE);
     return b_True;
 }
 
@@ -1253,9 +1299,25 @@ void print_request_detail(Connection* conn, Request* req) {
     }
 }
 
+void send_all(int fd, String* str) {
+    ssize_t total = str->length;
+    ssize_t sent = 0;
+
+    while (total > 0) {
+        sent = send(fd, str->data + sent, str->length - sent, 0);
+
+        if (sent < 0) {
+            hfs_log(stderr, "send() failed, %s\n", strerror(errno));
+            return;
+        }
+
+        total -= sent;
+    }
+}
+
 void send_response(ArenaAllocator* arena, int fd, Response* res) {
     String* str = response_to_str(arena, res);
-    send(fd, str->data, str->length, 0);
+    send_all(fd, str);
 }
 
 String* get_file_extension(ArenaAllocator* arena, String* filePath) {
@@ -1302,7 +1364,7 @@ void send_chunked_file_data(Connection* conn, String* path) {
     send(conn->fd, "0\r\n\r\n", 5, 0);
 }
 
-void serve_single_file(Connection* conn, Request* req, String* path) {
+void serve_single_file(Connection* conn, String* path) {
     String* extension = get_file_extension(conn->arena, path);
     String* mimeType = extension_to_mime(extension);
     Response* res = response_create(conn->arena);
@@ -1372,12 +1434,14 @@ String* file_size_to_str(ArenaAllocator* arena, float fileSize, int precision) {
     return str;
 }
 
-void build_file_list(ArenaAllocator* arena, DIR* dir, String* baseDir, Request* req, String* body) {
+size_t build_file_list(ArenaAllocator* arena, DIR* dir, String* baseDir, Request* req, StringList* list) {
     struct dirent* entry;
 	struct stat st;
     String* entryName;
     String* subUrl;
     String* completePath;
+    String* line;
+    size_t totalLength = 0;
 
     while ((entry = readdir(dir)) != NULL) {
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
@@ -1393,31 +1457,43 @@ void build_file_list(ArenaAllocator* arena, DIR* dir, String* baseDir, Request* 
             continue;
         }
 
-        str_add_cstr(arena, body, "<li><a href=\"");
-        str_add_str(arena, body, subUrl);
-        str_add_cstr(arena, body, "\">");
+        line = str_create_ex(arena, 128);
+
+        str_add_cstr(arena, line, "<li><a href=\"");
+        str_add_str(arena, line, subUrl);
+        str_add_cstr(arena, line, "\">");
 
 		if (S_ISDIR(st.st_mode)) {
-            str_add_cstr(arena, body, "/");
+            str_add_cstr(arena, line, "/");
 		}
 
-        str_add_str(arena, body, entryName);
+        str_add_str(arena, line, entryName);
 
         if (S_ISREG(st.st_mode)) {
-            str_add_cstr(arena, body, "</a><span>&nbsp;&nbsp;");
-            str_add_str(arena, body, file_size_to_str(arena, st.st_size, 2));
-            str_add_cstr(arena, body, "</span></li>\n");
+            str_add_cstr(arena, line, "</a><span>&nbsp;&nbsp;");
+            str_add_str(arena, line, file_size_to_str(arena, st.st_size, 2));
+            str_add_cstr(arena, line, "</span></li>\n");
         }
         else {
-            str_add_cstr(arena, body, "</a></li>\n");
+            str_add_cstr(arena, line, "</a></li>\n");
         }
+
+        totalLength += line->length;
+        str_list_add(arena, list, line);
     }
+
+    return totalLength;
 }
 
 void serve_file_list(Connection* conn, Request* req, String* currentPath) {
     Response* res;
-    String* resStr;
     DIR* dir;
+    StringNode* node;
+    StringList* list = str_list_create(conn->arena);
+    String* temp;
+    String* bodyEnd;
+    size_t totalLength;
+    size_t contentLength;
     
     if ((dir = opendir(currentPath->data)) == NULL) {
         hfs_log(stderr, "opendir() failed: `%s`, %s\n", currentPath->data, strerror(errno));
@@ -1427,9 +1503,6 @@ void serve_file_list(Connection* conn, Request* req, String* currentPath) {
     }
     else {
         res = response_create(conn->arena);
-
-        /* file list could take a huge memory allocation, so allocate a big memory block only for it. */
-        str_expand_capacity(conn->arena, res->body, DEFAULT_BLOCK_SIZE);
 
         str_add_cstr(conn->arena, res->version, "HTTP/1.1");
         str_add_cstr(conn->arena, res->code, "200");
@@ -1443,15 +1516,38 @@ void serve_file_list(Connection* conn, Request* req, String* currentPath) {
         str_add_cstr(conn->arena, res->body, "<input type=\"file\" id=\"fileInput\" name=\"fileInput\" />");
         str_add_cstr(conn->arena, res->body, "<button type=\"submit\">Upload</button></form><hr><ul>");        
 
-        build_file_list(conn->arena, dir, conn->path, req, res->body);
+        bodyEnd = str_create_by_cstr(conn->arena, "</ul><hr></body></html>");
+
+        totalLength = build_file_list(conn->arena, dir, conn->path, req, list);
         closedir(dir);
 
-        str_add_cstr(conn->arena, res->body, "</ul><hr></body></html>");
+        contentLength = res->body->length + totalLength + bodyEnd->length;
 
         headers_add(conn->arena, res->headers, str_create_by_cstr(conn->arena, "Content-Type"), str_create_by_cstr(conn->arena, "text/html; charset=utf-8"));
-        headers_add(conn->arena, res->headers, str_create_by_cstr(conn->arena, "Content-Length"), str_create_by_long(conn->arena, res->body->length));
-
+        headers_add(conn->arena, res->headers, str_create_by_cstr(conn->arena, "Content-Length"), str_create_by_long(conn->arena, contentLength));
         send_response(conn->arena, conn->fd, res);
+
+        temp = str_create_ex(conn->arena, DEFAULT_BLOCK_SIZE);
+        node = list->head;
+
+        while (node != NULL) {
+            str_add_str(conn->arena, temp, node->str);
+
+            if (temp->length >= THRESHOLD_FILE_LIST_CONCAT_LEN) {
+                send_all(conn->fd, temp);
+                str_reset(temp);
+            }
+
+            node = node->next;
+        }
+
+        if (temp->length > 0) {
+            send_all(conn->fd, temp);
+            str_reset(temp);
+        }
+
+        send_all(conn->fd, temp);
+        send_all(conn->fd, bodyEnd);
     }
 }
 
@@ -1463,7 +1559,7 @@ void handle_files_page(Connection* conn, Request* req) {
         serve_file_list(conn, req, currentPath);
     }
     else if (is_regular_file(currentPath->data)) {
-        serve_single_file(conn, req, currentPath);
+        serve_single_file(conn, currentPath);
     }
     else {
         res = response_create_by_template(conn->arena, "404", "Not Found");
@@ -1493,10 +1589,6 @@ String* parse_boundary(ArenaAllocator* arena, String* contentTypeValue) {
     return str_create_by_cstr_ex(arena, pos + pattern->length, contentTypeValue->length - pattern->length);
 }
 
-int compare_min(int left, int right) {
-    return (left < right) ? left : right;
-}
-
 void send_upload_success_page(ArenaAllocator* arena, int fd) {
     Response* res = response_create(arena);
 
@@ -1516,12 +1608,16 @@ void send_upload_success_page(ArenaAllocator* arena, int fd) {
     send_response(arena, fd, res);
 }
 
+int compare_min(int left, int right) {
+    return (left < right) ? left : right;
+}
+
 void recv_file_parts(ArenaAllocator* arena, int fd, long contentLength, String* boundary, String* parentDir) {
     Response* res;
     String* fileName = str_create(arena);
     String* fileNamePattern = str_create_by_cstr(arena, "filename=\"");
     String* completePath;
-    char* buf = (char*)arena_malloc(arena, DEFAULT_BLOCK_SIZE);
+    char* buf = (char*)arena_malloc(arena, DEFAULT_BUF_SIZE);
     char* pos = NULL;
     FILE* outFile;
     int len;
@@ -1529,7 +1625,7 @@ void recv_file_parts(ArenaAllocator* arena, int fd, long contentLength, String* 
     /* first, get every line to find out the file name, and read until the final \r\n. */
     while (b_True) {
         /* we would be used strstr() later, so left one byte to store a end '\0'. */
-        len = socket_read_line(fd, buf, DEFAULT_BLOCK_SIZE - 1);
+        len = socket_read_line(fd, buf, DEFAULT_BUF_SIZE - 1);
 
         if (len == 0) {   /* meets the final \r\n */
             break;
@@ -1566,11 +1662,11 @@ void recv_file_parts(ArenaAllocator* arena, int fd, long contentLength, String* 
         after the file data, the data remain: "\r\n, --boundary--\r\n", so if we have read
         all the file data, the length of the bytes left must be boundary's length + 8.
     */
-   completePath = concat_path(arena, parentDir, fileName);
-   outFile = fopen(completePath->data, "wb");
+    completePath = concat_path(arena, parentDir, fileName);
+    outFile = fopen(completePath->data, "wb");
 
     while (contentLength > boundary->length + 8) {
-        len = recv(fd, buf, compare_min(DEFAULT_BLOCK_SIZE, contentLength - boundary->length - 8), 0);
+        len = recv(fd, buf, compare_min(DEFAULT_BUF_SIZE, contentLength - boundary->length - 8), 0);
         fwrite(buf, sizeof(char), len, outFile);
         contentLength -= len;
     }
@@ -1578,8 +1674,8 @@ void recv_file_parts(ArenaAllocator* arena, int fd, long contentLength, String* 
     fclose(outFile);
 
     /* read the final "\r\n, --boundary--\r\n". */
-    socket_read_line(fd, buf, DEFAULT_BLOCK_SIZE);
-    socket_read_line(fd, buf, DEFAULT_BLOCK_SIZE);
+    socket_read_line(fd, buf, DEFAULT_BUF_SIZE);
+    socket_read_line(fd, buf, DEFAULT_BUF_SIZE);
 
     send_upload_success_page(arena, fd);
 }
@@ -1654,7 +1750,6 @@ void handle_connection(int fd, const char* rootDir) {
         goto finally;
     }
 
-    hfs_log(stdout, "connected: %s\n", conn.ip_port->data);
     conn_handle_http_routine(&conn);
     arena_seek_usage(conn.arena);
 
