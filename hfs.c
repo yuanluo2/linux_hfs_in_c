@@ -1440,9 +1440,9 @@ String* file_size_to_str(ArenaAllocator* arena, float fileSize, int precision) {
     expand again and again, some day when I open a dir on my browser, it's very slow, because this dir contains many files,
     the memory usage of this connection takes me 568040576 bytes! This is really a mistake!
     
-    I can't tolerant that, so I came up with this StringList. every file's name would expand, but they have limit, can't expand
-    many times, and can't take a huge memory usage. using a list to save them can avoid a long string's 2x expand policy, 
-    so this idea can decrease the memory usage. After I add this list, the memory usage only takes 516096 bytes.
+    I can't tolerant that, so I came up with this StringList. to save every file's name, string would expand, but they have limit, 
+    can't expand many times, and can't take a huge memory usage. using a list to save the strings can avoid a single long string's 2x 
+    expand policy, so this idea can decrease the memory usage. After I add this list, the memory usage only takes 516096 bytes.
 */
 size_t build_file_list(ArenaAllocator* arena, DIR* dir, String* baseDir, Request* req, StringList* list) {
     struct dirent* entry;
