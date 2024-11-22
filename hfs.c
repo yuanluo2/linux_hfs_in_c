@@ -1688,6 +1688,7 @@ void recv_file_parts(ArenaAllocator* arena, int fd, long contentLength, String* 
     socket_read_line(fd, buf, DEFAULT_BUF_SIZE);
 
     send_upload_success_page(arena, fd);
+    hfs_log(stdout, "upload file success: `%s`\n", completePath->data);
 }
 
 void handle_upload(Connection* conn, Request* req) {
