@@ -1844,7 +1844,12 @@ void handle_signal_int(int sigum) {
 }
 
 void handle_signal_child(int signum) {
-    pid_t pid = waitpid(-1, NULL, WNOHANG);
+    pid_t pid;
+    int status;
+
+    while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
+        /* do nothing. */    
+    }
 }
 
 Boolean setting_signals(void) {
