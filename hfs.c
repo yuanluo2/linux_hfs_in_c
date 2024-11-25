@@ -1299,7 +1299,7 @@ void print_request_detail(Connection* conn, Request* req) {
     }
 }
 
-void send_all(int fd, String* str) {
+Boolean send_all(int fd, String* str) {
     ssize_t total = str->length;
     ssize_t sent = 0;
 
@@ -1308,16 +1308,18 @@ void send_all(int fd, String* str) {
 
         if (sent < 0) {
             hfs_log(stderr, "send() failed, %s\n", strerror(errno));
-            return;
+            return b_False;
         }
 
         total -= sent;
     }
+
+    return b_True;
 }
 
 void send_response(ArenaAllocator* arena, int fd, Response* res) {
     String* str = response_to_str(arena, res);
-    send_all(fd, str);
+    (void)send_all(fd, str);
 }
 
 String* get_file_extension(ArenaAllocator* arena, String* filePath) {
@@ -1353,7 +1355,15 @@ void send_chunked_file_data(Connection* conn, String* path) {
         }
 
         str_add_long_in_hex(conn->arena, temp, len);
-        send_all(conn->fd, temp);
+        
+        /*
+            may be send some very big size file,
+            if it failed, just return.
+        */
+        if (!send_all(conn->fd, temp)) {
+            return;
+        }
+
         send(conn->fd, "\r\n", 2, 0);
         send(conn->fd, buf, len, 0);
         send(conn->fd, "\r\n", 2, 0);
@@ -1544,7 +1554,7 @@ void serve_file_list(Connection* conn, Request* req, String* currentPath) {
             str_add_str(conn->arena, temp, node->str);
 
             if (temp->length >= THRESHOLD_FILE_LIST_CONCAT_LEN) {
-                send_all(conn->fd, temp);
+                (void)send_all(conn->fd, temp);
                 str_reset(temp);
             }
 
@@ -1552,12 +1562,12 @@ void serve_file_list(Connection* conn, Request* req, String* currentPath) {
         }
 
         if (temp->length > 0) {
-            send_all(conn->fd, temp);
+            (void)send_all(conn->fd, temp);
             str_reset(temp);
         }
 
-        send_all(conn->fd, temp);
-        send_all(conn->fd, bodyEnd);
+        (void)send_all(conn->fd, temp);
+        (void)send_all(conn->fd, bodyEnd);
     }
 }
 
