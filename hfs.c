@@ -1361,6 +1361,7 @@ void send_chunked_file_data(Connection* conn, String* path) {
             if it failed, just return.
         */
         if (!send_all(conn->fd, temp)) {
+            hfs_log(stderr, "send file failed: `%s`\n", path->data);
             return;
         }
 
