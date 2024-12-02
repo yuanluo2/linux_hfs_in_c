@@ -1392,7 +1392,7 @@ void serve_single_file(Connection* conn, String* path) {
 }
 
 String* concat_path(ArenaAllocator* arena, String* parent, String* sub) {
-    String* temp = str_create_ex(arena, parent->length + sub->length + 1);
+    String* temp = str_create_ex(arena, parent->length + sub->length + 2);
     str_add_str(arena, temp, parent);
 
     if (str_ends_with_char(temp, '/')) {
@@ -1649,6 +1649,7 @@ void recv_file_parts(ArenaAllocator* arena, int fd, long contentLength, String* 
         len = socket_read_line(fd, buf, DEFAULT_BUF_SIZE - 1);
 
         if (len == 0) {   /* meets the final \r\n */
+            contentLength -= 2;   /* be careful here, subtract the length of the \r\n */
             break;
         }
         else if (len < 0) {
